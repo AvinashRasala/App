@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PyChat — Room {{ room }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="chat-wrapper">
+    <div class="chat-header">
+      <div>
+        <strong>Room:</strong> {{ room }}
+      </div>
+      <div class="header-actions">
+        <button type="button" id="notif-btn" class="notif-btn" title="Enable notifications">🔔 Enable alerts</button>
+        <a href="/leave" class="leave-btn">Leave</a>
+      </div>
+    </div>
+
+    <div class="room-code-banner">
+      Share this code so your friend can join:
+      <div class="code" id="room-code-text">{{ room }}</div>
+      <button type="button" id="copy-code-btn">Copy code</button>
+    </div>
+
+    <div id="messages" class="messages">
+      {% for msg in history %}
+        <div class="message {{ 'own' if msg.username == username else 'other' }}"
+             data-msg-id="{{ msg.id }}"
+             data-username="{{ msg.username }}"
+             data-type="{{ msg.msg_type }}"
+             data-raw="{{ msg.message }}">
+          <div class="meta">{{ msg.username }} · {{ msg.timestamp }}</div>
+          {% if msg.reply_to_id %}
+            <div class="reply-quote">
+              <span class="reply-quote-user">{{ msg.reply_username }}</span>
+              <span class="reply-quote-text">{{ msg.reply_snippet }}</span>
+            </div>
+          {% endif %}
+          {% if msg.msg_type == 'sticker' %}
+            <div class="sticker">{{ msg.message }}</div>
+          {% elif msg.msg_type == 'image' %}
+            <img class="sticker-img" src="{{ msg.message }}" alt="sticker" />
+          {% else %}
+            <div class="bubble">{{ msg.message }}</div>
+          {% endif %}
+          {% if msg.username == username %}
+            <div class="seen-label"></div>
+          {% endif %}
+          <button type="button" class="reply-btn" title="Reply">↩ Reply</button>
+        </div>
+      {% endfor %}
+    </div>
+
+    <div id="typing-indicator" class="typing-indicator"></div>
+
+    <div id="emoji-panel" class="picker-panel"></div>
+    <div id="sticker-panel" class="picker-panel"></div>
+    <input type="file" id="sticker-upload" accept="image/*" style="display:none" />
+
+    <div id="reply-preview" class="reply-preview" style="display:none">
+      <div class="reply-preview-content">
+        <span class="reply-preview-user" id="reply-preview-user"></span>
+        <span class="reply-preview-text" id="reply-preview-text"></span>
+      </div>
+      <button type="button" id="cancel-reply-btn">✕</button>
+    </div>
+
+    <form id="message-form" class="message-form">
+      <button type="button" id="emoji-btn" class="icon-btn" title="Emoji">😊</button>
+      <button type="button" id="sticker-btn" class="icon-btn" title="Stickers">🎟️</button>
+      <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required />
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const username = {{ username|tojson }};
+    const room = {{ room|tojson }};
+    const socket = io();
+
+    const messagesDiv = document.getElementById("messages");
+    const form = document.getElementById("message-form");
+    const input = document.getElementById("message-input");
+    const typingIndicator = document.getElementById("typing-indicator");
+
+    function scrollToBottom() {
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+    scrollToBottom();
+
+    // --- Reply-to-message ---
+    let currentReply = null; // { id, username, snippet }
+    const replyPreview = document.getElementById("reply-preview");
+    const replyPreviewUser = document.getElementById("reply-preview-user");
+    const replyPreviewText = document.getElementById("reply-preview-text");
+    const cancelReplyBtn = document.getElementById("cancel-reply-btn");
+
+    function snippetFor(type, raw) {
+      if (type === "sticker") return raw;
+      if (type === "image") return "📷 Photo";
+      const text = raw || "";
+      return text.length > 60 ? text.slice(0, 60) + "…" : text;
+    }
+
+    function setReply(id, username, type, raw) {
+      currentReply = { id, username, snippet: snippetFor(type, raw) };
+      replyPreviewUser.textContent = username;
+      replyPreviewText.textContent = currentReply.snippet;
+      replyPreview.style.display = "flex";
+      input.focus();
+    }
+
+    function clearReply() {
+      currentReply = null;
+      replyPreview.style.display = "none";
+    }
+
+    cancelReplyBtn.addEventListener("click", clearReply);
+
+    // Delegated click handling so this works for both history-rendered
+    // messages and ones added later via socket events.
+    messagesDiv.addEventListener("click", (e) => {
+      const btn = e.target.closest(".reply-btn");
+      if (!btn) return;
+      const messageEl = btn.closest(".message");
+      if (!messageEl) return;
+      const id = messageEl.dataset.msgId;
+      const msgUsername = messageEl.dataset.username;
+      const type = messageEl.dataset.type;
+      const raw = messageEl.dataset.raw;
+      setReply(id, msgUsername, type, raw);
+    });
+
+    function buildReplyQuoteEl(replyUsername, replySnippet) {
+      const quote = document.createElement("div");
+      quote.className = "reply-quote";
+      const userSpan = document.createElement("span");
+      userSpan.className = "reply-quote-user";
+      userSpan.textContent = replyUsername;
+      const textSpan = document.createElement("span");
+      textSpan.className = "reply-quote-text";
+      textSpan.textContent = replySnippet;
+      quote.appendChild(userSpan);
+      quote.appendChild(textSpan);
+      return quote;
+    }
+    const copyCodeBtn = document.getElementById("copy-code-btn");
+    copyCodeBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(room).then(() => {
+        copyCodeBtn.textContent = "Copied!";
+        setTimeout(() => { copyCodeBtn.textContent = "Copy code"; }, 1500);
+      }).catch(() => {
+        alert(`Room code: ${room}`);
+      });
+    });
+
+    socket.on("room_full", () => {
+      alert("This room already has two people chatting. Ask your friend to create a new room and share that code with you instead.");
+      window.location.href = "/leave";
+    });
+
+    // --- Notifications ---
+    const notifBtn = document.getElementById("notif-btn");
+    const baseTitle = document.title;
+    let unreadCount = 0;
+
+    function updateNotifBtn() {
+      if (!("Notification" in window)) {
+        notifBtn.style.display = "none";
+        return;
+      }
+      if (Notification.permission === "granted") {
+        notifBtn.textContent = "🔔 Alerts on";
+        notifBtn.disabled = true;
+      } else if (Notification.permission === "denied") {
+        notifBtn.textContent = "🔕 Alerts blocked";
+        notifBtn.disabled = true;
+      } else {
+        notifBtn.textContent = "🔔 Enable alerts";
+        notifBtn.disabled = false;
+      }
+    }
+    updateNotifBtn();
+
+    notifBtn.addEventListener("click", () => {
+      if (!("Notification" in window)) return;
+      Notification.requestPermission().then(updateNotifBtn);
+    });
+
+    function clearUnread() {
+      unreadCount = 0;
+      document.title = baseTitle;
+    }
+
+    function notifyNewMessage(data) {
+      // Tab title badge, works regardless of notification permission.
+      if (document.hidden || !document.hasFocus()) {
+        unreadCount += 1;
+        document.title = `(${unreadCount}) ${baseTitle}`;
+      }
+
+      // Native browser notification, only when tab isn't focused and permission granted.
+      if ("Notification" in window && Notification.permission === "granted" && (document.hidden || !document.hasFocus())) {
+        const body = data.type === "sticker" ? `sent a sticker ${data.message}` : data.message;
+        const notif = new Notification(`${data.username} · Room ${room}`, { body });
+        notif.onclick = () => {
+          window.focus();
+          notif.close();
+        };
+      }
+    }
+
+    window.addEventListener("focus", clearUnread);
+
+    socket.emit("join", { username, room });
+
+    socket.on("status", (data) => {
+      const el = document.createElement("div");
+      el.className = "status-msg";
+      el.textContent = data.msg;
+      messagesDiv.appendChild(el);
+      scrollToBottom();
+    });
+
+    let highestMsgId = 0;
+    document.querySelectorAll("#messages .message[data-msg-id]").forEach((el) => {
+      const id = parseInt(el.dataset.msgId, 10);
+      if (!isNaN(id) && id > highestMsgId) highestMsgId = id;
+    });
+
+    socket.on("message", (data) => {
+      const wrapper = document.createElement("div");
+      const isOwn = data.username === username;
+      wrapper.className = "message " + (isOwn ? "own" : "other");
+      if (data.id) {
+        wrapper.dataset.msgId = data.id;
+        if (data.id > highestMsgId) highestMsgId = data.id;
+      }
+      wrapper.dataset.username = data.username;
+      wrapper.dataset.type = data.type || "text";
+      wrapper.dataset.raw = data.message;
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${data.username} · ${data.timestamp}`;
+      wrapper.appendChild(meta);
+
+      if (data.reply_to_id) {
+        wrapper.appendChild(buildReplyQuoteEl(data.reply_username, data.reply_snippet));
+      }
+
+      const body = document.createElement("div");
+      if (data.type === "sticker") {
+        body.className = "sticker";
+        body.textContent = data.message;
+      } else if (data.type === "image") {
+        const img = document.createElement("img");
+        img.className = "sticker-img";
+        img.src = data.message;
+        img.alt = "sticker";
+        body.appendChild(img);
+      } else {
+        body.className = "bubble";
+        body.textContent = data.message;
+      }
+      wrapper.appendChild(body);
+
+      if (isOwn) {
+        const seenLabel = document.createElement("div");
+        seenLabel.className = "seen-label";
+        wrapper.appendChild(seenLabel);
+      }
+
+      const replyBtn = document.createElement("button");
+      replyBtn.type = "button";
+      replyBtn.className = "reply-btn";
+      replyBtn.title = "Reply";
+      replyBtn.textContent = "↩ Reply";
+      wrapper.appendChild(replyBtn);
+
+      messagesDiv.appendChild(wrapper);
+      scrollToBottom();
+
+      // If I'm actively looking at the chat when a message arrives, mark it seen right away.
+      if (!isOwn && document.hasFocus()) {
+        sendSeen();
+      }
+
+      if (!isOwn) {
+        notifyNewMessage(data);
+      }
+    });
+
+    function sendSeen() {
+      if (highestMsgId > 0) {
+        socket.emit("seen", { username, room, last_id: highestMsgId });
+      }
+    }
+
+    // Tell the other person what I've seen: on load, and whenever I focus the tab.
+    sendSeen();
+    window.addEventListener("focus", sendSeen);
+
+    socket.on("seen", (data) => {
+      // Clear all existing seen labels, then mark only the latest own message
+      // whose id is <= the last id the other person has seen.
+      const ownMessages = Array.from(document.querySelectorAll("#messages .message.own[data-msg-id]"));
+      let lastSeenEl = null;
+      ownMessages.forEach((el) => {
+        const label = el.querySelector(".seen-label");
+        if (label) label.textContent = "";
+        const id = parseInt(el.dataset.msgId, 10);
+        if (!isNaN(id) && id <= data.last_id) {
+          lastSeenEl = el;
+        }
+      });
+      if (lastSeenEl) {
+        const label = lastSeenEl.querySelector(".seen-label");
+        if (label) label.textContent = "✓✓ Seen";
+      }
+    });
+
+    let typingTimeout;
+    socket.on("typing", (data) => {
+      typingIndicator.textContent = `${data.username} is typing...`;
+      clearTimeout(typingTimeout);
+      typingTimeout = setTimeout(() => {
+        typingIndicator.textContent = "";
+      }, 1500);
+    });
+
+    input.addEventListener("input", () => {
+      socket.emit("typing", { username, room });
+    });
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      const payload = { username, room, message, type: "text" };
+      if (currentReply) {
+        payload.reply_to_id = currentReply.id;
+        payload.reply_username = currentReply.username;
+        payload.reply_snippet = currentReply.snippet;
+      }
+      socket.emit("message", payload);
+      input.value = "";
+      closePanels();
+      clearUnread();
+      clearReply();
+    });
+
+    // --- Emoji picker ---
+    const EMOJIS = [
+      "😀","😁","😂","🤣","😊","😇","🙂","😉","😍","😘",
+      "😜","🤪","😎","🤩","🥳","😢","😭","😡","😱","😴",
+      "🤔","🤗","🙄","😬","🙃","😅","😆","😋","😏","😌",
+      "🤤","😳","🥺","😤","😷","🤒","🤕","🤢","🥶","🥵",
+      "👍","👎","👏","🙌","🙏","💪","🤝","👊","✌️","🤞",
+      "❤️","🧡","💛","💚","💙","💜","🖤","🤍","💔","💯",
+      "🔥","✨","🎉","🎂","🎁","⭐","☀️","🌧️","🌈","🍕",
+      "🍔","🍟","🍩","☕","🍺","⚽","🏀","🎮","🎵","📱"
+    ];
+
+    // --- Stickers (bigger emoji sent as standalone "sticker" messages) ---
+    const STICKERS = [
+      "😂","😍","😭","😡","🥳","😎","🤗","😴",
+      "👍","👏","🙌","💪","❤️","🔥","🎉","💯",
+      "🙏","🤝","👋","😘","🥰","😜","🤩","😢"
+    ];
+
+    // --- Custom emojis/stickers, saved per-browser in localStorage ---
+    const CUSTOM_EMOJI_KEY = "pychat_custom_emojis";
+    const CUSTOM_STICKER_KEY = "pychat_custom_stickers";
+
+    function loadList(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveList(key, list) {
+      try {
+        localStorage.setItem(key, JSON.stringify(list));
+      } catch (e) {
+        alert("Couldn't save — your browser storage might be full.");
+      }
+    }
+
+    let customEmojis = loadList(CUSTOM_EMOJI_KEY);
+    let customStickers = loadList(CUSTOM_STICKER_KEY); // array of data URLs
+
+    function buildPanel(panelEl, items, onPick, opts) {
+      panelEl.innerHTML = "";
+      items.forEach((item) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "picker-item";
+        if (opts && opts.isImage) {
+          const img = document.createElement("img");
+          img.src = item;
+          img.className = "picker-item-img";
+          btn.appendChild(img);
+        } else {
+          btn.textContent = item;
+        }
+        btn.addEventListener("click", () => onPick(item));
+        panelEl.appendChild(btn);
+      });
+
+      // "+" tile to add a custom item.
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "picker-item picker-add";
+      addBtn.textContent = "+";
+      addBtn.title = opts && opts.addTitle ? opts.addTitle : "Add your own";
+      addBtn.addEventListener("click", opts.onAdd);
+      panelEl.appendChild(addBtn);
+
+      // Small clear-mine link, only if there's at least one custom item.
+      if (opts && opts.customCount > 0) {
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "picker-item picker-clear";
+        clearBtn.textContent = "🗑";
+        clearBtn.title = "Clear my custom items";
+        clearBtn.addEventListener("click", opts.onClear);
+        panelEl.appendChild(clearBtn);
+      }
+    }
+
+    const emojiPanel = document.getElementById("emoji-panel");
+    const stickerPanel = document.getElementById("sticker-panel");
+    const emojiBtn = document.getElementById("emoji-btn");
+    const stickerBtn = document.getElementById("sticker-btn");
+    const stickerUpload = document.getElementById("sticker-upload");
+
+    function renderEmojiPanel() {
+      buildPanel(emojiPanel, [...EMOJIS, ...customEmojis], (emoji) => {
+        input.value += emoji;
+        input.focus();
+      }, {
+        addTitle: "Add your own emoji",
+        customCount: customEmojis.length,
+        onAdd: () => {
+          const val = window.prompt("Paste or type an emoji to add to your picker:");
+          if (!val) return;
+          const trimmed = val.trim().slice(0, 8);
+          if (!trimmed) return;
+          customEmojis.push(trimmed);
+          saveList(CUSTOM_EMOJI_KEY, customEmojis);
+          renderEmojiPanel();
+        },
+        onClear: () => {
+          if (!confirm("Remove all your custom emojis?")) return;
+          customEmojis = [];
+          saveList(CUSTOM_EMOJI_KEY, customEmojis);
+          renderEmojiPanel();
+        },
+      });
+    }
+
+    function renderStickerPanel() {
+      const builtIn = STICKERS.map((s) => ({ value: s, isImage: false }));
+      const custom = customStickers.map((s) => ({ value: s, isImage: true }));
+
+      stickerPanel.innerHTML = "";
+      builtIn.forEach(({ value }) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "picker-item";
+        btn.textContent = value;
+        btn.addEventListener("click", () => {
+          socket.emit("message", { username, room, message: value, type: "sticker" });
+          closePanels();
+        });
+        stickerPanel.appendChild(btn);
+      });
+      custom.forEach(({ value }) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "picker-item";
+        const img = document.createElement("img");
+        img.src = value;
+        img.className = "picker-item-img";
+        btn.appendChild(img);
+        btn.addEventListener("click", () => {
+          socket.emit("message", { username, room, message: value, type: "image" });
+          closePanels();
+        });
+        stickerPanel.appendChild(btn);
+      });
+
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "picker-item picker-add";
+      addBtn.textContent = "+";
+      addBtn.title = "Upload your own sticker";
+      addBtn.addEventListener("click", () => stickerUpload.click());
+      stickerPanel.appendChild(addBtn);
+
+      if (customStickers.length > 0) {
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "picker-item picker-clear";
+        clearBtn.textContent = "🗑";
+        clearBtn.title = "Clear my custom stickers";
+        clearBtn.addEventListener("click", () => {
+          if (!confirm("Remove all your custom stickers?")) return;
+          customStickers = [];
+          saveList(CUSTOM_STICKER_KEY, customStickers);
+          renderStickerPanel();
+        });
+        stickerPanel.appendChild(clearBtn);
+      }
+    }
+
+    stickerUpload.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (!file.type.startsWith("image/")) {
+        alert("Please choose an image file.");
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          // Resize down so stickers stay small and fast to send/store.
+          const maxDim = 160;
+          let { width, height } = img;
+          if (width > height && width > maxDim) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else if (height > maxDim) {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+
+          customStickers.push(dataUrl);
+          saveList(CUSTOM_STICKER_KEY, customStickers);
+          renderStickerPanel();
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+      stickerUpload.value = "";
+    });
+
+    renderEmojiPanel();
+    renderStickerPanel();
+
+    function closePanels() {
+      emojiPanel.classList.remove("open");
+      stickerPanel.classList.remove("open");
+    }
+
+    emojiBtn.addEventListener("click", () => {
+      const isOpen = emojiPanel.classList.contains("open");
+      closePanels();
+      if (!isOpen) emojiPanel.classList.add("open");
+    });
+
+    stickerBtn.addEventListener("click", () => {
+      const isOpen = stickerPanel.classList.contains("open");
+      closePanels();
+      if (!isOpen) stickerPanel.classList.add("open");
+    });
+  </script>
+</body>
+</html>

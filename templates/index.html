@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PyChat — Join</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="auth-wrapper">
+    <div class="auth-card">
+      <h1>💬 PyChat</h1>
+      <p class="subtitle">Simple 1-on-1 chat. Create a room to get a unique code, then share it with your friend — they just enter that code to join. Each room only ever holds two people.</p>
+
+      {% if error %}
+        <div class="error">{{ error }}</div>
+      {% endif %}
+
+      <div class="tabs">
+        <button type="button" class="tab-btn {{ 'active' if active_tab != 'join' else '' }}" data-tab="create">Create a Room</button>
+        <button type="button" class="tab-btn {{ 'active' if active_tab == 'join' else '' }}" data-tab="join">Join a Room</button>
+      </div>
+
+      <form method="POST" action="/" id="create-form" class="tab-panel {{ 'active' if active_tab != 'join' else '' }}">
+        <input type="hidden" name="action" value="create" />
+        <label for="create-username">Your name</label>
+        <input type="text" id="create-username" name="username" placeholder="e.g. Alex" required maxlength="30" />
+        <button type="submit">Create Room &amp; Get Code</button>
+      </form>
+
+      <form method="POST" action="/" id="join-form" class="tab-panel {{ 'active' if active_tab == 'join' else '' }}">
+        <input type="hidden" name="action" value="join" />
+        <label for="join-username">Your name</label>
+        <input type="text" id="join-username" name="username" placeholder="e.g. Sam" required maxlength="30" />
+
+        <label for="join-room">Room code</label>
+        <input type="text" id="join-room" name="room" placeholder="e.g. K7X9QP" required maxlength="10" style="text-transform: uppercase;" />
+
+        <button type="submit">Join Room</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const tabButtons = document.querySelectorAll(".tab-btn");
+    const panels = { create: document.getElementById("create-form"), join: document.getElementById("join-form") };
+
+    tabButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        tabButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        Object.values(panels).forEach((p) => p.classList.remove("active"));
+        panels[btn.dataset.tab].classList.add("active");
+      });
+    });
+  </script>
+</body>
+</html>
